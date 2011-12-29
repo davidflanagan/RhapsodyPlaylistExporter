@@ -1,0 +1,31 @@
+This is a Node program for extracting your Rhapsody playlists from
+http://www.rhapsody.com and writing them, in JSON format, to a local
+file. You might use this information to help you re-create the
+playlists at another subscription music site, for example.
+
+To run it, you need to know your Rhapsody Id, which is a short string
+of numbers and letters (mine is two letters followed by two numbers)
+that you can find by visiting the Rhapsody website.  Point your
+browser to http://www.rhapsody.com, log in, and go to "My Music ->
+Profile". In the browser's address bar, you should see a URL like this:
+
+    http://www.rhapsody.com/members/xxxx
+
+The part of the URL marked xxxx above is your Rhapsody Id. 
+
+While you are on your profile page, click on "Edit profile" and ensure
+that "Share profile" is checked. If your profile is shared, then
+anyone who knows your id can view the contents of your Rhapsody
+library and playlists.  That's what this program does.  (You can turn
+sharing off after running this program to extract your playlists)
+
+Once you know your id and have checked that profile sharing is on, run
+this program with a command like this:
+
+     node RhapsodyPlaylistExporter xxxx
+
+Where xxxx is your Rhapsody id.  The program will print a lot of
+messages while it is requesting files from the Rhapsody website, and
+eventually will create a file named 'playlists.json'. It is a plain
+text file that describes your playlists, listing the artist, album,
+and track name for each track of each playlist.

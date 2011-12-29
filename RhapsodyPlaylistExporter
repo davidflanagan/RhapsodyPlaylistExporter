@@ -1,0 +1,211 @@
+#!/usr/bin/env node
+var http = require("http");
+var url = require("url");
+var fs = require("fs");
+
+function usage() {
+    process.stdout.write("Usage: RhapsodyPlaylistExporter <RhapsodyId> [<outputfile>]\n\n");
+    process.stdout.write("\tFind your RhapsodyId by visting your playlists\n");
+    process.stdout.write("\tpage at http://rhapsody.com.  The URL in the\n");
+    process.stdout.write("\tbrowser's address bar should look like this:\n");
+    process.stdout.write("\twww.rhapsody.com/members/xxxx/playlists\n");
+    process.stdout.write("\tThe numbers of letters that appear instead of xxxx\n");
+    process.stdout.write("\tare your RhapsodyId.\n\n");
+    process.stdout.write("\tYour profile must be set to allow sharing of\n"); 
+    process.stdout.write("\tplaylists in order for this program to work\n");
+    process.exit(-1);
+}
+
+if (process.argv.length < 3) usage();
+
+var outputfile = process.argv[3] || "playlists.json";
+var memberid = process.argv[2];
+var rhapsodyURL = "http://www.rhapsody.com"
+var baseURL = rhapsodyURL + "/members/" + memberid;
+var playlists = [];
+var playlistsScraped = 0;
+
+getPlaylistTitlesAndURLs(function() {
+    getPlaylistContents(function() {
+        getAlbumNames(function() {
+            outputPlaylists();
+        });
+    });
+});
+
+// Populate the playlists[] array and then invoke the done() function
+function getPlaylistTitlesAndURLs(done) {
+    console.log("Getting your Rhapsody playlists:");
+
+    fetch(baseURL + "/playlists", function(s) {
+        var segments = s.split("<li class='playlist'>");
+        var playlistURLAndTitle = /<a href="([^"]+)" class="ajax">([^<]+)<\/a>/;
+        
+        // start at item 1 since playlists[0] is all the stuff 
+        // before the first playlist
+        for(var i = 1; i < segments.length; i++) {
+            var match = segments[i].match(playlistURLAndTitle);
+            if (match) {
+                playlists.push({
+                    title: unescapeEntities(match[2]),
+                    url: match[1]
+                });
+            }
+            else {
+                console.log("Malformed playlists data");
+            }
+        }
+
+        done();
+    });
+}
+
+// This function is called when getPlaylistTitlesAndURLs is done.
+// It fetches the content of each of the playlists in playlists[]
+// and then invokes the done() method.
+function getPlaylistContents(done) {
+    var playlistsQueried = 0;  // How many have completed?
+    playlists.forEach(function(playlist) {
+        var tracksPattern = /<li album_id=[^>]*>/g;
+        var url = rhapsodyURL + playlist.url;
+        delete playlist.url;  // We don't need it anymore
+        
+        fetch(url, success, error);
+
+        function success(s) {
+            console.log("Got tracks for", playlist.title);
+            var trackTags = s.match(tracksPattern);
+            if (trackTags) {
+                playlist.tracks = [];
+                for(var i = 0; i < trackTags.length; i++) {
+                    var tag = trackTags[i];
+                    // Trim "<li" and trailing ">"
+                    tag = tag.substring(4, tag.length-1);
+                    var attrs = tag.match(/([a-z_]+)\s*=\s*('[^']*'|"[^"]*")/g)
+                    trackdata = [];
+                    for(var j = 0; j < attrs.length; j++) {
+                        var attr = attrs[j];
+                        var pos = attr.indexOf("=");
+                        var name = attr.substring(0, pos).trim();
+                        var value = attr.substring(pos+1).trim();
+                        value = value.substring(1, value.length-1);
+                        trackdata[name] = value;
+                    }
+                    
+                    playlist.tracks[i] = {
+                        name: unescapeEntities(trackdata.track_name),
+                        artist: unescapeEntities(trackdata.artist_name),
+                        // This doesn't get us the album name, but it
+                        // gets us a url for querying the album name
+                        album: rhapsodyURL +
+                            "/artist/" + trackdata.artist_shortcut +
+                            "/album/" + trackdata.album_shortcut
+                    };
+                }
+            }
+            else {
+                console.error("Can't get playlist contents:", playlist.title);
+            }
+
+            playlistsQueried++;
+            if (playlistsQueried === playlists.length) done();
+        }
+
+        function error(e) {
+            console.error("Couldn't fetch", url, e.message);
+            playlistsQueried++;
+            if (playlistsQueried === playlists.length) done();
+        }
+    });
+}
+
+// Loop through the playlists and resolve all the album names.
+function getAlbumNames(done) {
+    console.log("Querying album names for playlist tracks");
+
+    var albums = {}; // map rhapsody album url to album name
+
+    // Look through all tracks in all playlists, creating a set of
+    // albums whose full names we need
+    playlists.forEach(function(p) {
+        if (!p.tracks) return;
+        p.tracks.forEach(function(t) {
+            albums[t.album] = null;
+        });
+    });
+
+    var albumURLs = Object.keys(albums); // An array of just the urls
+    var albumsQueried = 0;               // How many queries are complete
+
+    // Now launch a bunch of queries for the names of those albums
+    // Call the finish function when all queries are complete
+    albumURLs.forEach(function(url) {
+        // Load the Rhapsody web page of the album
+        fetch(url, success, error);
+
+        function success(s) {
+            var pos = s.indexOf("id='album-title'");
+            if (pos === -1) {
+                console.log("Can't find album name", s);
+            }
+            else {
+                var start = s.indexOf(">", pos) + 1;
+                var end = s.indexOf("<", start);
+                var name = unescapeEntities(s.substring(start, end).trim());
+                console.log(name);
+                albums[url] = name;
+            }
+
+            if (++albumsQueried === albumURLs.length) finish();
+        }
+        
+        function error(e) {
+            if (++albumsQueried === albumURLs.length) finish();
+        }
+    });
+
+    function finish() {
+        // Report any album titles we couldn't fetch
+        albumURLs.forEach(function(url) {
+            if (albums[url] === null) {
+                console.error("Couldn't fetch album name from", url);
+            }
+        });
+        
+        // Loop through all the playlists and tracks again, 
+        // replacing the album id with the album title (or null)
+        playlists.forEach(function(p) {
+            if (!p.tracks) return;
+            p.tracks.forEach(function(t) {
+                t.album = albums[t.album];
+            });
+        });
+        
+        // Finally, call the done callback
+        done();
+    }
+}
+
+
+function outputPlaylists() {
+    fs.writeFileSync(outputfile, JSON.stringify(playlists, null, 2));
+}
+
+// Utility function to fetch a URL and pass its body to a callback
+function fetch(address, callback, errback) {
+    var body = "";
+    var request =  http.get(url.parse(address), function(response) {
+        response.on("data", function(chunk) {
+            body += chunk;
+        });
+        response.on("end", function() {
+            callback(body);
+        });
+    });
+    if (errback) request.on("error", errback);
+}
+
+// Remove &amp; etc. from a string
+function unescapeEntities(s) {
+    return s.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&");
+}
